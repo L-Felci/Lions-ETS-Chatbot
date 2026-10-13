@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import os
 
-# Configurazione della pagina Streamlit
+# Configurazione pagina Streamlit
 st.set_page_config(
     page_title="Assistente Lions ETS - Supporto Soci",
     page_icon="🦁",
@@ -24,7 +24,7 @@ if "GEMINI_API_KEY" in st.secrets:
 elif "GEMINI_API_KEY" in os.environ:
     api_key = os.environ["GEMINI_API_KEY"]
 
-# Campo di inserimento manuale visibile solo se la chiave non è nei Secrets
+# Fallback se non ancora impostata nei Secrets
 if not api_key:
     api_key = st.sidebar.text_input("Inserisci la tua Gemini API Key (o salvala nei Secrets):", type="password")
 
@@ -32,34 +32,10 @@ if not api_key:
     st.info("👈 La chiave API non è presente nei Secrets di Streamlit Cloud. Inseriscila nella barra laterale per procedere.", icon="🔑")
     st.stop()
 
-# Configurazione globale della chiave API
+# Configurazione globale di Gemini
 genai.configure(api_key=api_key)
 
-# 2. Individuazione istantanea del modello attivo con caching (0 ms di ritardo sulle domande)
-@st.cache_resource(show_spinner=False)
-def get_active_model_name(_key):
-    """
-    Rileva una sola volta all'avvio il modello Gemini attivo per la chiave API,
-    salvandolo in cache per eliminare qualsiasi attesa di rete sulle domande successive.
-    """
-    try:
-        models = genai.list_models()
-        available = [
-            m.name.replace("models/", "")
-            for m in models
-            if "generateContent" in m.supported_generation_methods
-        ]
-        # Ordine di preferenza per velocità e stabilità
-        for pref in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-3.8-flash", "gemini-pro"]:
-            if pref in available:
-                return pref
-        if available:
-            return available[0]
-    except Exception:
-        pass
-    return "gemini-1.5-flash"
-
-# Prompt di sistema completo e grounded sui documenti Lions ETS
+# Prompt di sistema completo grounded sui documenti Lions ETS
 SYSTEM_PROMPT = """
 Sei un assistente esperto specializzato sulla Riforma del Terzo Settore (D.Lgs. 117/2017) e sulla transizione dei Lions Club in Enti del Terzo Settore (ETS) ed iscrizione al RUNTS.
 Rispondi alle domande dei soci del Lions Club in modo chiaro, accurato, professionale e basato sulla normativa italiana e sui Vademecum/Statuti-tipo del Multidistretto Lions 108 I.T.A.L.Y.
@@ -76,61 +52,84 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-# Inizializzazione della cronologia chat
+# Modelli Gemini da provare in ordine di priorità (modello consigliato da Google al primo posto)
+MODEL_CANDIDATES = [
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-pro"
+]
+
+# Inizializzazione cronologia chat
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "Ciao! Sono l'assistente virtuale per la transizione del Club in ETS. Di cosa vorresti parlare? Posso darti informazioni su vantaggi fiscali, statuto, RUNTS o adempimenti."}
     ]
 
-# Mostra i messaggi precedenti nella schermata
+# Visualizzazione dei messaggi precedenti
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # Gestione input del socio
 if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per i Lions..."):
-    # Registra e mostra subito la domanda dell'utente
+    # Salva e mostra subito la domanda dell'utente
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Risposta dell'assistente
+    # Elaborazione e generazione della risposta
     with st.chat_message("assistant"):
-        # Alert visivo d'avviso immediato
+        # Banner visivo d'avviso immediato
         status_box = st.empty()
         status_box.info("⏳ **Risposta in corso...** L'assistente sta elaborando la tua richiesta.")
 
-        # Recupera istantaneamente il modello dalla cache
-        active_model = get_active_model_name(api_key)
-
-        # Preparazione rapida dello storico (ultimi 4 messaggi per massimizzare la velocità)
+        # Preparazione della cronologia recente per velocità ottimale
         recent_messages = st.session_state.messages[-5:-1]
         chat_history = [
             {"role": "user" if msg["role"] == "user" else "model", "parts": [msg["content"]]}
             for msg in recent_messages
         ]
 
-        try:
-            model = genai.GenerativeModel(
-                model_name=active_model,
-                system_instruction=SYSTEM_PROMPT
-            )
-            chat = model.start_chat(history=chat_history)
-            response = chat.send_message(user_input, stream=True)
+        response_text = ""
+        success = False
+        last_error = None
 
-            # Generatore in streaming: rimuove l'alert al primo chunk di testo ricevuto
-            def stream_text():
-                first = True
-                for chunk in response:
-                    if chunk.text:
-                        if first:
-                            status_box.empty()
-                            first = False
-                        yield chunk.text
+        # Tenta direttamente sui modelli disponibili in ordine di priorità
+        for model_name in MODEL_CANDIDATES:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=SYSTEM_PROMPT
+                )
+                chat = model.start_chat(history=chat_history)
+                response_stream = chat.send_message(user_input, stream=True)
 
-            full_response = st.write_stream(stream_text())
+                # Generatore per lo streaming
+                def stream_response():
+                    first_chunk = True
+                    for chunk in response_stream:
+                        if chunk.text:
+                            if first_chunk:
+                                status_box.empty()
+                                first_chunk = False
+                            yield chunk.text
+
+                response_text = st.write_stream(stream_response())
+                status_box.empty()
+                success = True
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if success:
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+        else:
             status_box.empty()
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            st.error(f"⚠️ Errore durante la generazione della risposta: {last_error}")
+
 
         except Exception as err:
             status_box.empty()
