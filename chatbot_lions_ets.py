@@ -42,6 +42,20 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
+def select_model_name():
+    candidates = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
+    try:
+        models = genai.list_models()
+        available = [m.name.replace("models/", "") for m in models if "generateContent" in m.supported_generation_methods]
+        for cand in candidates:
+            if cand in available:
+                return cand
+        if available:
+            return available[0]
+    except Exception:
+        pass
+    return "gemini-2.5-flash"
+
 # Inizializzazione della cronologia di chat
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -64,8 +78,9 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
     with st.chat_message("assistant"):
         with st.spinner("Elaborazione risposta..."):
             try:
+                model_name = select_model_name()
                 model = genai.GenerativeModel(
-                    model_name="gemini-1.5-flash",
+                    model_name=model_name,
                     system_instruction=SYSTEM_PROMPT
                 )
                 
