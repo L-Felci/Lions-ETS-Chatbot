@@ -16,7 +16,7 @@ st.markdown("""
 Benvenuto! Questo assistente è progettato per rispondere alle domande dei soci in merito alla **trasformazione del Lions Club in Ente del Terzo Settore (ETS)**, all'iscrizione al **RUNTS**, ai vantaggi fiscali, agli adempimenti e alle modifiche statutarie.
 """)
 
-# Gestione della chiave API: prima cerca nei Secrets di Streamlit o nelle variabili d'ambiente, altrimenti mostra l'input in barra laterale
+# Gestione della chiave API
 api_key = None
 
 if "GEMINI_API_KEY" in st.secrets:
@@ -30,7 +30,7 @@ if not api_key:
     st.info("👈 Per iniziare, inserisci la chiave API di Google Gemini nella barra laterale oppure salvala nei Secrets dell'app.", icon="🔑")
     st.stop()
 
-# Configurazione del modello Gemini
+# Configurazione di Gemini
 genai.configure(api_key=api_key)
 
 # Prompt di sistema con le linee guida fondamentali grounded sui documenti Lions ETS
@@ -50,19 +50,8 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-def select_model_name():
-    candidates = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
-    try:
-        models = genai.list_models()
-        available = [m.name.replace("models/", "") for m in models if "generateContent" in m.supported_generation_methods]
-        for cand in candidates:
-            if cand in available:
-                return cand
-        if available:
-            return available[0]
-    except Exception:
-        pass
-    return "gemini-3.8-flash"
+# Modello predefinito veloce (evitiamo chiamate lente a list_models)
+PREFERRED_MODELS = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
 
 # Inizializzazione della cronologia di chat
 if "messages" not in st.session_state:
@@ -82,26 +71,44 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Genera la risposta con Gemini
+    # Genera la risposta con risposta in streaming per feedback immediato
     with st.chat_message("assistant"):
-        with st.spinner("Elaborazione risposta..."):
+        response_text = ""
+        success = False
+
+        # Prepariamo la cronologia di chat
+        chat_history = []
+        for msg in st.session_state.messages[:-1]:
+            role = "user" if msg["role"] == "user" else "model"
+            chat_history.append({"role": role, "parts": [msg["content"]]})
+
+        # Tentativo con i modelli veloci in sequenza
+        for model_name in PREFERRED_MODELS:
             try:
-                model_name = select_model_name()
                 model = genai.GenerativeModel(
                     model_name=model_name,
                     system_instruction=SYSTEM_PROMPT
                 )
-                
-                # Prepara lo storico per il modello
-                chat_history = []
-                for msg in st.session_state.messages[:-1]:
-                    role = "user" if msg["role"] == "user" else "model"
-                    chat_history.append({"role": role, "parts": [msg["content"]]})
-                
                 chat = model.start_chat(history=chat_history)
-                response = chat.send_message(user_input)
                 
-                st.markdown(response.text)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
+                # Streaming della risposta: il testo compare in tempo reale
+                response = chat.send_message(user_input, stream=True)
+                
+                def stream_generator():
+                    for chunk in response:
+                        if chunk.text:
+                            yield chunk.text
+
+                response_text = st.write_stream(stream_generator())
+                success = True
+                break
             except Exception as e:
-                st.error(f"Si è verificato un errore durante la generazione della risposta: {e}")
+                # Se un modello fallisce o non è attivo per quella chiave, passa al successivo
+                continue
+
+        if success:
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+        else:
+            error_msg = "Non è stato possibile ottenere una risposta. Verificare che la chiave API Gemini inserita nei Secrets sia attiva e valida."
+            st.error(error_msg)
+
