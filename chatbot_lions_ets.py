@@ -33,25 +33,25 @@ if not api_key:
 # Configurazione di Gemini
 genai.configure(api_key=api_key)
 
-# Prompt di sistema sintetico e ottimizzato per la massima velocità di risposta
+# Prompt di sistema con le linee guida fondamentali grounded sui documenti Lions ETS
 SYSTEM_PROMPT = """
-Sei un assistente esperto sulla Riforma del Terzo Settore (D.Lgs. 117/2017) e sulla transizione dei Lions Club in Enti del Terzo Settore (ETS) ed iscrizione al RUNTS.
-Rispondi ai soci del Lions Club in modo chiaro, conciso, sintetico e professionale.
+Sei un assistente esperto specializzato sulla Riforma del Terzo Settore (D.Lgs. 117/2017) e sulla transizione dei Lions Club in Enti del Terzo Settore (ETS) ed iscrizione al RUNTS.
+Rispondi alle domande dei soci del Lions Club in modo chiaro, accurato, professionale e basato sulla normativa italiana e sui Vademecum/Statuti-tipo del Multidistretto Lions 108 I.T.A.L.Y.
 
-Punti chiave:
-1. RUNTS: Non obbligatorio ma premiale (vantaggi fiscali, 5x1000, co-progettazione P.A., personalità giuridica con responsabilità limitata).
-2. Adempimenti: Adeguamento dello Statuto (modello-tipo), deposito annuale del bilancio entro il 30 giugno, tenuta libri sociali, comunicazione variazioni al RUNTS entro 30 giorni.
-3. Soci ed ammissione: Procedura trasparente, non discriminatoria, delibera del C.D. e motivazione/riesame in caso di rigetto (non più cooptazione chiusa).
+Punti chiave da ricordare nelle risposte:
+1. Iscrizione al RUNTS: Non obbligatoria ma premiale (vantaggi fiscali, 5x1000, co-progettazione P.A., personalità giuridica con responsabilità limitata).
+2. Adempimenti principali: Adeguamento dello Statuto (modello-tipo), approvazione e deposito annuale del bilancio entro il 30 giugno, tenuta libri sociali, comunicazione variazioni al RUNTS entro 30 giorni.
+3. Soci ed ammissione: Non si usa più la semplice cooptazione tradizionale chiusa; le domande di ammissione seguono criteri trasparenti, non discriminatori, con delibera del C.D. e motivazione/riesame in caso di rigetto.
 4. Esempi pratici:
-   - 5x1000: 30 soci con reddito medio 50.000 € -> ~2.160 €/anno per il Club.
-   - Erogazioni aziende: Donazione di 1.000 € -> risparmio IRES del 24% (240 €), costo netto effettivo 760 €.
-   - Costi: Una tantum per passaggio (registrazione/notaio) + costi annuali di gestione e contabilità.
+   - 5x1000: Con 30 soci ad alto reddito/medio reddito (es. 50.000 €), il gettito stimato per il Club è significativo (circa 2.160 €/anno se tutti lo destinano).
+   - Erogazioni aziendali: Una donazione di 1.000 € da parte di un'azienda genera un risparmio IRES del 24% (240 €), riducendo il costo effettivo netto della donazione a 760 €.
+   - Costi: Costi una tantum di passaggio (registrazione, eventuale notaio per personalità giuridica) e costi di gestione annuale (consulenza fiscale, adempimenti RUNTS).
 
-Sii diretto, rispondi sempre in italiano ed evita preamboli inutili per velocizzare la lettura.
+Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-# Modello ultra-veloce raccomandato
-FAST_MODEL = "gemini-1.5-flash"
+# Modelli supportati in ordine di priorità aggiornati secondo la direttiva Gemini
+PREFERRED_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash"]
 
 # Inizializzazione della cronologia di chat
 if "messages" not in st.session_state:
@@ -71,59 +71,54 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Genera la risposta con alert di caricamento ed esecuzione in streaming
+    # Genera la risposta con indicatore visivo immediato e streaming velocizzato
     with st.chat_message("assistant"):
-        # 1. Alert visivo immediato di elaborazione in corso
-        progress_alert = st.info("⏳ **Risposta in corso...** L'assistente sta elaborando la richiesta sui documenti Lions ETS.", icon="🔄")
+        status_placeholder = st.empty()
+        status_placeholder.info("⏳ **Risposta in corso...** L'assistente sta elaborando la tua richiesta.")
         
-        # Prepariamo la cronologia di chat limitata agli ultimi messaggi per massima velocità
+        response_text = ""
+        success = False
+        last_error = None
+
+        # Inviamo solo la cronologia recente per la massima velocità
+        recent_messages = st.session_state.messages[-7:-1]
         chat_history = []
-        recent_messages = st.session_state.messages[-7:-1] # Mantiene solo gli ultimi messaggi per evitare rallentamenti da contesto lungo
         for msg in recent_messages:
             role = "user" if msg["role"] == "user" else "model"
             chat_history.append({"role": role, "parts": [msg["content"]]})
 
-        try:
-            model = genai.GenerativeModel(
-                model_name=FAST_MODEL,
-                system_instruction=SYSTEM_PROMPT
-            )
-            chat = model.start_chat(history=chat_history)
-            
-            # Generazione in streaming
-            response = chat.send_message(user_input, stream=True)
-            
-            # Rimuoviamo l'alert visivo appena inizia lo streaming del testo
-            progress_alert.empty()
-            
-            def stream_generator():
-                for chunk in response:
-                    if chunk.text:
-                        yield chunk.text
-
-            response_text = st.write_stream(stream_generator())
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-        except Exception as e:
-            progress_alert.empty()
-            # Tentativo di fallback veloce su gemini-2.0-flash se il primo modello fallisce
+        for model_name in PREFERRED_MODELS:
             try:
-                model_fallback = genai.GenerativeModel(
-                    model_name="gemini-2.0-flash",
+                model = genai.GenerativeModel(
+                    model_name=model_name,
                     system_instruction=SYSTEM_PROMPT
                 )
-                chat_fallback = model_fallback.start_chat(history=chat_history)
-                response_fallback = chat_fallback.send_message(user_input, stream=True)
+                chat = model.start_chat(history=chat_history)
+                response = chat.send_message(user_input, stream=True)
                 
-                def stream_generator_fb():
-                    for chunk in response_fallback:
+                def stream_generator():
+                    nonlocal status_placeholder
+                    first_chunk = True
+                    for chunk in response:
                         if chunk.text:
+                            if first_chunk:
+                                status_placeholder.empty()
+                                first_chunk = False
                             yield chunk.text
 
-                response_text = st.write_stream(stream_generator_fb())
-                st.session_state.messages.append({"role": "assistant", "content": response_text})
-            except Exception as ex:
-                st.error(f"Errore durante la generazione: {ex}")
+                response_text = st.write_stream(stream_generator())
+                success = True
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if success:
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+        else:
+            status_placeholder.empty()
+            st.error(f"Si è verificato un errore con le API Gemini: {last_error}")
+
 
 
 
