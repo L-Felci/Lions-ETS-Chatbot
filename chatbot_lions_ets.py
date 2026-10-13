@@ -42,19 +42,23 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-def select_model_name():
-    candidates = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
+def get_candidate_models():
+    """Restituisce una lista ordinata di modelli da provare."""
+    preferred_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-pro"]
     try:
         models = genai.list_models()
         available = [m.name.replace("models/", "") for m in models if "generateContent" in m.supported_generation_methods]
-        for cand in candidates:
-            if cand in available:
-                return cand
-        if available:
-            return available[0]
+        # Ordina dando priorità a preferred_models
+        ordered = [m for m in preferred_models if m in available]
+        # Aggiungi eventuali altri modelli disponibili non elencati esplicitamente
+        for m in available:
+            if m not in ordered:
+                ordered.append(m)
+        if ordered:
+            return ordered
     except Exception:
         pass
-    return "gemini-2.5-flash"
+    return preferred_models
 
 # Inizializzazione della cronologia di chat
 if "messages" not in st.session_state:
@@ -74,26 +78,37 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Genera la risposta con Gemini
+    # Genera la risposta con Gemini provando i modelli disponibili
     with st.chat_message("assistant"):
         with st.spinner("Elaborazione risposta..."):
-            try:
-                model_name = select_model_name()
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=SYSTEM_PROMPT
-                )
-                
-                # Prepara lo storico per il modello
-                chat_history = []
-                for msg in st.session_state.messages[:-1]:
-                    role = "user" if msg["role"] == "user" else "model"
-                    chat_history.append({"role": role, "parts": [msg["content"]]})
-                
-                chat = model.start_chat(history=chat_history)
-                response = chat.send_message(user_input)
-                
-                st.markdown(response.text)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
-            except Exception as e:
-                st.error(f"Si è verificato un errore durante la generazione della risposta: {e}")
+            candidates = get_candidate_models()
+            response_text = None
+            last_error = None
+            
+            for model_name in candidates:
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=SYSTEM_PROMPT
+                    )
+                    
+                    # Prepara lo storico per il modello
+                    chat_history = []
+                    for msg in st.session_state.messages[:-1]:
+                        role = "user" if msg["role"] == "user" else "model"
+                        chat_history.append({"role": role, "parts": [msg["content"]]})
+                    
+                    chat = model.start_chat(history=chat_history)
+                    response = chat.send_message(user_input)
+                    response_text = response.text
+                    break # Successo!
+                except Exception as e:
+                    last_error = e
+                    continue
+            
+            if response_text:
+                st.markdown(response_text)
+                st.session_state.messages.append({"role": "assistant", "content": response_text})
+            else:
+                st.error(f"Si è verificato un errore durante la generazione della risposta: {last_error}")
+
