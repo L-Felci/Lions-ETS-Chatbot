@@ -16,15 +16,13 @@ st.markdown("""
 Benvenuto! Questo assistente è progettato per rispondere alle domande dei soci in merito alla **trasformazione del Lions Club in Ente del Terzo Settore (ETS)**, all'iscrizione al **RUNTS**, ai vantaggi fiscali, agli adempimenti e alle modifiche statutarie.
 """)
 
-# 1. Recupero automatico della chiave API dai Secrets di Streamlit o dalle variabili d'ambiente
+# 1. Recupero automatico della chiave API
 api_key = None
-
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 elif "GEMINI_API_KEY" in os.environ:
     api_key = os.environ["GEMINI_API_KEY"]
 
-# Campo di inserimento manuale visibile solo se la chiave non è presente nei Secrets
 if not api_key:
     api_key = st.sidebar.text_input("Inserisci la tua Gemini API Key (o salvala nei Secrets):", type="password")
 
@@ -52,35 +50,30 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-# Modelli reali e ufficiali supportati da Google Generative AI (in ordine di velocità)
-REAL_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-pro"
-]
-
-# Funzione per trovare il modello funzionante e memorizzarlo in session_state per velocizzare tutte le risposte successive
-if "working_model_name" not in st.session_state:
-    st.session_state.working_model_name = None
-
-def get_fast_working_model():
-    # Se abbiamo già trovato il modello attivo nelle domande precedenti, lo riusiamo subito a 0 ms
-    if st.session_state.working_model_name:
-        return st.session_state.working_model_name
+def get_supported_models():
+    """Interroga l'API Gemini per scoprire in tempo reale quali modelli sono attivi per la chiave."""
+    try:
+        models = genai.list_models()
+        valid = []
+        for m in models:
+            if "generateContent" in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                valid.append(name)
+        
+        # Ordiniamo mettendo al primo posto i modelli "flash" (più veloci per la chat)
+        flash_models = [m for m in valid if "flash" in m.lower()]
+        other_models = [m for m in valid if m not in flash_models]
+        ordered = flash_models + other_models
+        if ordered:
+            return ordered
+    except Exception:
+        pass
     
-    # Altrimenti cerchiamo tra i modelli reali
-    for m in REAL_MODELS:
-        try:
-            m_obj = genai.GenerativeModel(m)
-            # Test rapido senza generazione per verificare la presenza
-            st.session_state.working_model_name = m
-            return m
-        except Exception:
-            continue
-    
-    # Fallback predefinito
-    st.session_state.working_model_name = "gemini-1.5-flash"
-    return "gemini-1.5-flash"
+    # Fallback ampio se list_models non risponde
+    return ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-pro"]
+
+if "available_models" not in st.session_state:
+    st.session_state.available_models = get_supported_models()
 
 # Inizializzazione della cronologia chat
 if "messages" not in st.session_state:
@@ -106,42 +99,52 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
         status_box = st.empty()
         status_box.info("⏳ **Risposta in corso...** L'assistente sta elaborando la tua richiesta.")
 
-        # Preparazione rapida dello storico (ultimi 4 messaggi per massimizzare la velocità)
+        # Preparazione rapida dello storico (ultimi 4 messaggi per la massima velocità)
         recent_messages = st.session_state.messages[-5:-1]
         chat_history = [
             {"role": "user" if msg["role"] == "user" else "model", "parts": [msg["content"]]}
             for msg in recent_messages
         ]
 
-        model_name = get_fast_working_model()
-        
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=SYSTEM_PROMPT
-            )
-            chat = model.start_chat(history=chat_history)
-            response = chat.send_message(user_input, stream=True)
+        response_text = ""
+        success = False
+        last_error = None
 
-            # Generatore per st.write_stream
-            def generate_chunks():
-                cleared = False
-                for chunk in response:
-                    if chunk.text:
-                        if not cleared:
-                            status_box.empty()
-                            cleared = True
-                        yield chunk.text
+        models_to_try = st.session_state.available_models
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=SYSTEM_PROMPT
+                )
+                chat = model.start_chat(history=chat_history)
+                response = chat.send_message(user_input, stream=True)
 
-            response_text = st.write_stream(generate_chunks())
-            status_box.empty()
+                def generate_chunks():
+                    cleared = False
+                    for chunk in response:
+                        if chunk.text:
+                            if not cleared:
+                                status_box.empty()
+                                cleared = True
+                            yield chunk.text
+
+                response_text = st.write_stream(generate_chunks())
+                status_box.empty()
+                success = True
+                # Mettiamo in prima posizione il modello che ha funzionato
+                st.session_state.available_models = [model_name] + [m for m in models_to_try if m != model_name]
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if success:
             st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-        except Exception as e:
-            # Se il modello memorizzato fallisce, azzeriamo la cache per consentire il ripristino al prossimo tentativo
-            st.session_state.working_model_name = None
+        else:
             status_box.empty()
-            st.error(f"⚠️ Errore durante la generazione della risposta con il modello {model_name}: {e}")
+            st.error(f"⚠️ Errore durante la generazione della risposta: {last_error}")
+
 
 
 
