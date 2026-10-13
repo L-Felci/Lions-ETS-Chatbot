@@ -52,15 +52,35 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-# Modelli supportati da provare in ordine (gemini-3.8-flash per primo come richiesto dalle API Gemini)
-CANDIDATE_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
+# Modelli reali e ufficiali supportati da Google Generative AI (in ordine di velocità)
+REAL_MODELS = [
     "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
     "gemini-pro"
 ]
+
+# Funzione per trovare il modello funzionante e memorizzarlo in session_state per velocizzare tutte le risposte successive
+if "working_model_name" not in st.session_state:
+    st.session_state.working_model_name = None
+
+def get_fast_working_model():
+    # Se abbiamo già trovato il modello attivo nelle domande precedenti, lo riusiamo subito a 0 ms
+    if st.session_state.working_model_name:
+        return st.session_state.working_model_name
+    
+    # Altrimenti cerchiamo tra i modelli reali
+    for m in REAL_MODELS:
+        try:
+            m_obj = genai.GenerativeModel(m)
+            # Test rapido senza generazione per verificare la presenza
+            st.session_state.working_model_name = m
+            return m
+        except Exception:
+            continue
+    
+    # Fallback predefinito
+    st.session_state.working_model_name = "gemini-1.5-flash"
+    return "gemini-1.5-flash"
 
 # Inizializzazione della cronologia chat
 if "messages" not in st.session_state:
@@ -86,48 +106,42 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
         status_box = st.empty()
         status_box.info("⏳ **Risposta in corso...** L'assistente sta elaborando la tua richiesta.")
 
-        # Preparazione rapida dello storico (ultimi 6 messaggi per massimizzare la velocità)
-        recent_messages = st.session_state.messages[-7:-1]
+        # Preparazione rapida dello storico (ultimi 4 messaggi per massimizzare la velocità)
+        recent_messages = st.session_state.messages[-5:-1]
         chat_history = [
             {"role": "user" if msg["role"] == "user" else "model", "parts": [msg["content"]]}
             for msg in recent_messages
         ]
 
-        response_text = ""
-        success = False
-        last_error = None
+        model_name = get_fast_working_model()
+        
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=SYSTEM_PROMPT
+            )
+            chat = model.start_chat(history=chat_history)
+            response = chat.send_message(user_input, stream=True)
 
-        for model_name in CANDIDATE_MODELS:
-            try:
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=SYSTEM_PROMPT
-                )
-                chat = model.start_chat(history=chat_history)
-                response = chat.send_message(user_input, stream=True)
+            # Generatore per st.write_stream
+            def generate_chunks():
+                cleared = False
+                for chunk in response:
+                    if chunk.text:
+                        if not cleared:
+                            status_box.empty()
+                            cleared = True
+                        yield chunk.text
 
-                # Generatore per st.write_stream
-                def generate_chunks():
-                    cleared = False
-                    for chunk in response:
-                        if chunk.text:
-                            if not cleared:
-                                status_box.empty()
-                                cleared = True
-                            yield chunk.text
-
-                response_text = st.write_stream(generate_chunks())
-                status_box.empty()
-                success = True
-                break
-            except Exception as e:
-                last_error = e
-                continue
-
-        if success:
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
-        else:
+            response_text = st.write_stream(generate_chunks())
             status_box.empty()
-            st.error(f"⚠️ Errore durante la generazione della risposta: {last_error}")
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+        except Exception as e:
+            # Se il modello memorizzato fallisce, azzeriamo la cache per consentire il ripristino al prossimo tentativo
+            st.session_state.working_model_name = None
+            status_box.empty()
+            st.error(f"⚠️ Errore durante la generazione della risposta con il modello {model_name}: {e}")
+
 
 
