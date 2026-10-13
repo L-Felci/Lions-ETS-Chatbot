@@ -43,7 +43,7 @@ Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprender
 """
 
 # Inizializzazione della cronologia di chat
-if "messages" not in st.sessions_state:
+if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "Ciao! Sono l'assistente virtuale per la transizione del Club in ETS. Di cosa vorresti parlare? Posso darti informazioni su vantaggi fiscali, statuto, RUNTS o adempimenti."}
     ]
