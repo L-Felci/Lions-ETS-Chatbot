@@ -4,7 +4,7 @@ import os
 
 # Configurazione della pagina Streamlit
 st.set_page_config(
-    page_title="Assistente Lions ETS - FAQ & Supporto Soci",
+    page_title="Assistente Lions ETS - Supporto Soci",
     page_icon="🦁",
     layout="centered"
 )
@@ -16,24 +16,26 @@ st.markdown("""
 Benvenuto! Questo assistente è progettato per rispondere alle domande dei soci in merito alla **trasformazione del Lions Club in Ente del Terzo Settore (ETS)**, all'iscrizione al **RUNTS**, ai vantaggi fiscali, agli adempimenti e alle modifiche statutarie.
 """)
 
-# Gestione della chiave API
+# 1. Lettura automatica della chiave API (Secrets di Streamlit o Ambiente)
 api_key = None
 
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 elif "GEMINI_API_KEY" in os.environ:
     api_key = os.environ["GEMINI_API_KEY"]
-else:
-    api_key = st.sidebar.text_input("Inserisci la tua Gemini API Key (o configurala nei Secrets di Streamlit):", type="password")
+
+# Fallback opzionale se la chiave non è ancora stata salvata nei Secrets
+if not api_key:
+    api_key = st.sidebar.text_input("Inserisci la tua Gemini API Key (o salvala nei Secrets):", type="password")
 
 if not api_key:
-    st.info("👈 Per iniziare, inserisci la chiave API di Google Gemini nella barra laterale oppure salvala nei Secrets dell'app.", icon="🔑")
+    st.info("👈 La chiave API non è presente nei Secrets di Streamlit Cloud. Inseriscila nella barra laterale per procedere.", icon="🔑")
     st.stop()
 
-# Configurazione di Gemini
+# Configurazione API Gemini
 genai.configure(api_key=api_key)
 
-# Prompt di sistema con le linee guida fondamentali grounded sui documenti Lions ETS
+# Prompt di sistema completo grounded sui documenti Lions ETS
 SYSTEM_PROMPT = """
 Sei un assistente esperto specializzato sulla Riforma del Terzo Settore (D.Lgs. 117/2017) e sulla transizione dei Lions Club in Enti del Terzo Settore (ETS) ed iscrizione al RUNTS.
 Rispondi alle domande dei soci del Lions Club in modo chiaro, accurato, professionale e basato sulla normativa italiana e sui Vademecum/Statuti-tipo del Multidistretto Lions 108 I.T.A.L.Y.
@@ -50,10 +52,17 @@ Punti chiave da ricordare nelle risposte:
 Rispondi sempre in italiano, in modo cortese, strutturato e facile da comprendere per tutti i soci.
 """
 
-# Modelli supportati in ordine di priorità aggiornati secondo la direttiva Gemini
-PREFERRED_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash"]
+# Lista dei modelli supportati in ordine di priorità per velocità e stabilità
+PREFERRED_MODELS = [
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-3.8-flash",
+    "gemini-pro"
+]
 
-# Inizializzazione della cronologia di chat
+# Inizializzazione cronologia chat
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "Ciao! Sono l'assistente virtuale per la transizione del Club in ETS. Di cosa vorresti parlare? Posso darti informazioni su vantaggi fiscali, statuto, RUNTS o adempimenti."}
@@ -64,29 +73,31 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Input dell'utente
+# Gestione input dell'utente
 if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per i Lions..."):
-    # Aggiungi il messaggio utente
+    # Salva e mostra il messaggio dell'utente
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Genera la risposta con indicatore visivo immediato e streaming velocizzato
+    # Elaborazione risposta dell'assistente
     with st.chat_message("assistant"):
-        status_placeholder = st.empty()
-        status_placeholder.info("⏳ **Risposta in corso...** L'assistente sta elaborando la tua richiesta.")
+        # Alert visivo immediato "Risposta in corso"
+        status_box = st.empty()
+        status_box.info("⏳ **Risposta in corso...** L'assistente sta elaborando la tua richiesta.")
         
         response_text = ""
         success = False
-        last_error = None
+        last_exception = None
 
-        # Inviamo solo la cronologia recente per la massima velocità
+        # Ottimizzazione velocità: invia soltanto la cronologia recente (ultimi 6 messaggi)
         recent_messages = st.session_state.messages[-7:-1]
         chat_history = []
         for msg in recent_messages:
             role = "user" if msg["role"] == "user" else "model"
             chat_history.append({"role": role, "parts": [msg["content"]]})
 
+        # Fallback sequenziale automatico tra i modelli per garantire la risposta
         for model_name in PREFERRED_MODELS:
             try:
                 model = genai.GenerativeModel(
@@ -96,29 +107,26 @@ if user_input := st.chat_input("Fai una domanda sulla Riforma Terzo Settore per 
                 chat = model.start_chat(history=chat_history)
                 response = chat.send_message(user_input, stream=True)
                 
-                def stream_generator():
-                    nonlocal status_placeholder
+                # Generatore in streaming: rimuove il banner di attesa al primo chunk
+                def stream_chunks():
                     first_chunk = True
                     for chunk in response:
                         if chunk.text:
                             if first_chunk:
-                                status_placeholder.empty()
+                                status_box.empty()
                                 first_chunk = False
                             yield chunk.text
 
-                response_text = st.write_stream(stream_generator())
+                response_text = st.write_stream(stream_chunks())
+                status_box.empty()
                 success = True
                 break
             except Exception as e:
-                last_error = e
+                last_exception = e
                 continue
 
         if success:
             st.session_state.messages.append({"role": "assistant", "content": response_text})
         else:
-            status_placeholder.empty()
-            st.error(f"Si è verificato un errore con le API Gemini: {last_error}")
-
-
-
-
+            status_box.empty()
+            st.error(f"⚠️ Impossibile generare la risposta. Dettaglio errore: {last_exception}")
